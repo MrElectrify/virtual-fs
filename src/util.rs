@@ -14,7 +14,7 @@ use std::path::{Component, Path, PathBuf};
 /// # Example
 /// ```
 /// use std::path::Path;
-/// use virtual_fs::util::component_iter;
+/// use virtual_filesystem::util::component_iter;
 ///
 /// itertools::assert_equal(
 ///     component_iter(Path::new("../many/files/and/directories/")),
@@ -60,7 +60,7 @@ pub fn create_dir_all<FS: FileSystem + ?Sized>(fs: &FS, path: &str) -> crate::Re
 /// # Example
 /// ```
 /// use std::path::Path;
-/// use virtual_fs::util::normalize_path;
+/// use virtual_filesystem::util::normalize_path;
 ///
 /// assert_eq!(normalize_path("///////"), Path::new("/"));
 /// assert_eq!(normalize_path("./test/something/../"), Path::new("test"));
@@ -78,7 +78,7 @@ pub fn normalize_path<P: AsRef<Path>>(path: P) -> PathBuf {
 /// # Example
 /// ```
 /// use std::path::Path;
-/// use virtual_fs::util::parent_iter;
+/// use virtual_filesystem::util::parent_iter;
 ///
 /// itertools::assert_equal(
 ///     parent_iter(Path::new("/many/files/and/directories")),
