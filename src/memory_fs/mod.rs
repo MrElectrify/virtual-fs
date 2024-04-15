@@ -81,10 +81,14 @@ impl FileSystem for MemoryFS {
                     }
                 }
                 hash_map::Entry::Vacant(vacant) => {
-                    // create a new empty file and return it
-                    let file = File::new(Mutex::default());
-                    vacant.insert(Entry::UserData(file.clone()));
-                    file
+                    if options.create {
+                        // create a new empty file and return it
+                        let file = File::new(Mutex::default());
+                        vacant.insert(Entry::UserData(file.clone()));
+                        file
+                    } else {
+                        return Err(not_found());
+                    }
                 }
             };
 
