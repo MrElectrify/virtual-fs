@@ -41,7 +41,7 @@ impl<R: Read + Seek> ZipFS<R> {
                     .to_lowercase(),
             );
 
-            normalized_lower_to_path.insert(normalized, lower);
+            normalized_lower_to_path.insert(lower, normalized);
         }
 
         Ok(Self {
