@@ -3,15 +3,12 @@ name = "virtual-filesystem"
 authors = ["Andrew Buck <mrelectrify@warsaw-revamped.com>"]
 description = "A virtual filesystem implemented in Rust."
 documentation = "https://docs.rs/crate/virtual-filesystem"
-version = "0.1.3"
+version = "0.2.0"
 edition = "2021"
 license-file = "LICENSE"
 readme = "README.md"
 repository = "https://github.com/MrElectrify/virtual-fs"
 keywords = ["vfs", "filesystem", "virtual", "memory"]
-
-[features]
-fallback_search = []
 
 [dependencies]
 duplicate = "1.0"

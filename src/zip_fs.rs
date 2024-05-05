@@ -17,6 +17,7 @@ use zip::ZipArchive;
 pub struct ZipFS<R: Read + Seek> {
     zip_file: Mutex<ZipArchive<R>>,
     directories: HashSet<PathBuf>,
+    normalized_lower_to_path: HashMap<PathBuf, PathBuf>,
 }
 
 impl<R: Read + Seek> ZipFS<R> {
@@ -26,15 +27,27 @@ impl<R: Read + Seek> ZipFS<R> {
 
         // collect folders
         let mut directories = HashSet::from_iter([Path::new("").to_owned()]);
+        let mut normalized_lower_to_path = HashMap::new();
         for file_name in zip_file.file_names() {
-            for parent in parent_iter(Path::new(file_name)) {
+            for parent in parent_iter(Path::new(&file_name.to_lowercase())) {
                 directories.insert(parent.to_owned());
             }
+
+            let normalized = Self::normalize_path(file_name);
+            let lower = PathBuf::from(
+                normalized
+                    .to_str()
+                    .ok_or_else(not_supported)?
+                    .to_lowercase(),
+            );
+
+            normalized_lower_to_path.insert(normalized, lower);
         }
 
         Ok(Self {
             zip_file: Mutex::new(zip_file),
             directories,
+            normalized_lower_to_path,
         })
     }
 
@@ -53,51 +66,30 @@ impl<R: Read + Seek> ZipFS<R> {
         })
     }
 
+    /// Returns the cased path for the given normalized path.
+    fn get_cased_path(&self, normalized_path: &Path) -> Option<&PathBuf> {
+        // find the cased path
+        let lowercase_path = PathBuf::from(normalized_path.to_str()?.to_lowercase());
+        self.normalized_lower_to_path.get(&lowercase_path)
+    }
+
     fn normalize_path<P: AsRef<Path>>(path: P) -> PathBuf {
         // as far as I can tell, zip files are relative from the root
         make_relative(util::normalize_path(path))
     }
 
-    #[cfg(not(feature = "fallback_search"))]
     fn with_file<RV, F: FnOnce(ZipFile) -> RV>(
         &self,
         normalized_path: &Path,
         f: F,
     ) -> crate::Result<RV> {
+        // find the cased path
+        let cased_path = self.get_cased_path(normalized_path).ok_or_else(not_found)?;
+
         let mut zip_file = self.zip_file.lock();
 
-        let entry = Self::convert_error(
-            zip_file.by_name(normalized_path.to_str().ok_or_else(not_supported)?),
-        )?;
-        Ok(f(entry))
-    }
-
-    #[cfg(feature = "fallback_search")]
-    fn with_file<RV, F: FnOnce(ZipFile) -> RV>(
-        &self,
-        normalized_path: &Path,
-        f: F,
-    ) -> crate::Result<RV> {
-        let mut zip_file = self.zip_file.lock();
-        // this is a bit strange because of lifetimes. even in `Err(FileNotFound)` the borrow checker still considers
-        // `zip_file` as borrowed mutably, so we have to leave that block entirely.
-        match zip_file.by_name(&normalized_path.to_string_lossy()) {
-            Ok(entry) => return Ok(f(entry)),
-            Err(ZipError::FileNotFound) => {}
-            Err(err) => return Self::convert_error(Err(err)),
-        }
-
-        // as a fallback, search for it in O(n) time, case-insensitive
-        let file_name = zip_file
-            .file_names()
-            .find(|name| {
-                normalized_path
-                    .to_string_lossy()
-                    .eq_ignore_ascii_case(&Self::normalize_path(name).to_string_lossy())
-            })
-            .ok_or_else(not_found)?
-            .to_owned();
-        let entry = Self::convert_error(zip_file.by_name(&file_name))?;
+        let entry =
+            Self::convert_error(zip_file.by_name(cased_path.to_str().ok_or_else(not_supported)?))?;
         Ok(f(entry))
     }
 }
@@ -110,8 +102,15 @@ impl<R: Read + Seek> FileSystem for ZipFS<R> {
     fn metadata(&self, path: &str) -> crate::Result<Metadata> {
         let normalized_path = Self::normalize_path(path);
 
-        // try directories first
-        if self.directories.get(normalized_path.as_path()).is_some() {
+        // try directories first, which are lowercase
+        let lowercase_path = PathBuf::from(
+            normalized_path
+                .as_path()
+                .to_str()
+                .ok_or_else(not_supported)?
+                .to_lowercase(),
+        );
+        if self.directories.get(&lowercase_path).is_some() {
             return Ok(Metadata {
                 file_type: FileType::Directory,
                 len: 0,
@@ -336,19 +335,15 @@ mod test {
         assert!(fs.exists("/").unwrap());
         assert!(fs.exists("").unwrap());
         assert!(fs.exists("file").unwrap());
-        #[cfg(feature = "fallback_search")]
         assert!(fs.exists("FiLe").unwrap());
         assert!(!fs.exists("no_file").unwrap());
         assert!(fs.exists("folder").unwrap());
-        #[cfg(feature = "fallback_search")]
         assert!(fs.exists("folDeR").unwrap());
         assert!(fs.exists("folder/and/it").unwrap());
-        #[cfg(feature = "fallback_search")]
         assert!(fs.exists("folder/anD/iT").unwrap());
         assert!(fs.exists("folder/and/it/desc").unwrap());
         assert!(!fs.exists("folder/and/it/does/not").unwrap());
         assert!(fs.exists("///test/something_else/../../file").unwrap());
-        #[cfg(feature = "fallback_search")]
         assert!(fs.exists("///test/something_elsE/../../file").unwrap());
     }
 }
