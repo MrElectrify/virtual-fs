@@ -58,7 +58,7 @@ impl<R: Read + Seek> ZipFS<R> {
         make_relative(util::normalize_path(path))
     }
 
-    #[cfg(not(fallback_search))]
+    #[cfg(not(feature = "fallback_search"))]
     fn with_file<RV, F: FnOnce(ZipFile) -> RV>(
         &self,
         normalized_path: &Path,
@@ -72,11 +72,13 @@ impl<R: Read + Seek> ZipFS<R> {
         Ok(f(entry))
     }
 
-    #[cfg(fallback_search)]
-    fn with_file<RV, F: FnOnce(ZipFile) -> RV>(&self, path: &str, f: F) -> crate::Result<RV> {
+    #[cfg(feature = "fallback_search")]
+    fn with_file<RV, F: FnOnce(ZipFile) -> RV>(
+        &self,
+        normalized_path: &Path,
+        f: F,
+    ) -> crate::Result<RV> {
         let mut zip_file = self.zip_file.lock();
-        let normalized_path = Self::normalize_path(path);
-
         // this is a bit strange because of lifetimes. even in `Err(FileNotFound)` the borrow checker still considers
         // `zip_file` as borrowed mutably, so we have to leave that block entirely.
         match zip_file.by_name(&normalized_path.to_string_lossy()) {
@@ -85,11 +87,15 @@ impl<R: Read + Seek> ZipFS<R> {
             Err(err) => return Self::convert_error(Err(err)),
         }
 
-        // as a fallback, search for it in O(n) time
+        // as a fallback, search for it in O(n) time, case-insensitive
         let file_name = zip_file
             .file_names()
-            .find(|name| normalized_path == Self::normalize_path(name))
-            .ok_or_else(|| VfsError::from(VfsErrorKind::FileNotFound))?
+            .find(|name| {
+                normalized_path
+                    .to_string_lossy()
+                    .eq_ignore_ascii_case(&Self::normalize_path(name).to_string_lossy())
+            })
+            .ok_or_else(not_found)?
             .to_owned();
         let entry = Self::convert_error(zip_file.by_name(&file_name))?;
         Ok(f(entry))
@@ -330,11 +336,19 @@ mod test {
         assert!(fs.exists("/").unwrap());
         assert!(fs.exists("").unwrap());
         assert!(fs.exists("file").unwrap());
+        #[cfg(feature = "fallback_search")]
+        assert!(fs.exists("FiLe").unwrap());
         assert!(!fs.exists("no_file").unwrap());
         assert!(fs.exists("folder").unwrap());
+        #[cfg(feature = "fallback_search")]
+        assert!(fs.exists("folDeR").unwrap());
         assert!(fs.exists("folder/and/it").unwrap());
+        #[cfg(feature = "fallback_search")]
+        assert!(fs.exists("folder/anD/iT").unwrap());
         assert!(fs.exists("folder/and/it/desc").unwrap());
         assert!(!fs.exists("folder/and/it/does/not").unwrap());
         assert!(fs.exists("///test/something_else/../../file").unwrap());
+        #[cfg(feature = "fallback_search")]
+        assert!(fs.exists("///test/something_elsE/../../file").unwrap());
     }
 }

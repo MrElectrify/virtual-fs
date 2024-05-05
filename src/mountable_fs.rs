@@ -21,7 +21,11 @@ impl MountableFS {
     /// # Arguments
     /// `path`: The path to mount the filesystem at.  
     /// `fs`: The filesystem to mount.  
-    pub fn mount<P: AsRef<Path>>(&self, path: P, fs: Box<dyn FileSystem + Send + Sync>) -> crate::Result<()> {
+    pub fn mount<P: AsRef<Path>>(
+        &self,
+        path: P,
+        fs: Box<dyn FileSystem + Send + Sync>,
+    ) -> crate::Result<()> {
         // find the parent path
         let normalized_path = normalize_and_relativize(path);
         let parent_path = normalized_path.parent().ok_or_else(invalid_path)?;
@@ -45,7 +49,9 @@ impl MountableFS {
 }
 
 impl<'a> FromIterator<(&'a str, Box<dyn FileSystem + Send + Sync>)> for MountableFS {
-    fn from_iter<T: IntoIterator<Item = (&'a str, Box<dyn FileSystem + Send + Sync>)>>(iter: T) -> Self {
+    fn from_iter<T: IntoIterator<Item = (&'a str, Box<dyn FileSystem + Send + Sync>)>>(
+        iter: T,
+    ) -> Self {
         let mountable_fs = Self::default();
         for (path, fs) in iter {
             mountable_fs.mount(path, fs).unwrap();
