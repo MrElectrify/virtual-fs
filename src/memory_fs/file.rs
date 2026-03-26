@@ -51,7 +51,7 @@ impl FileHandle {
         let contents = contents_mutex.lock();
 
         Self {
-            contents: unsafe { mem::transmute(contents) },
+            contents: unsafe { mem::transmute::<MutexGuard<'_, Vec<u8>>, MutexGuard<'_, Vec<u8>>>(contents) },
             _mutex: contents_mutex,
             pos: 0,
             mode,

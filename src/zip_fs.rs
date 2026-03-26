@@ -1,7 +1,6 @@
 use crate::file::{DirEntry, File, FileType, Metadata, OpenOptions};
 use crate::util::{make_relative, not_found, not_supported, parent_iter};
 use crate::{util, FileSystem};
-use itertools::Itertools;
 use parking_lot::Mutex;
 use std::collections::{HashMap, HashSet};
 use std::fmt::Debug;
@@ -18,22 +17,29 @@ pub struct ZipFS<R: Read + Seek> {
     zip_file: Mutex<ZipArchive<R>>,
     directories: HashSet<PathBuf>,
     normalized_lower_to_path: HashMap<PathBuf, PathBuf>,
+    /// File sizes keyed by normalized lowercase path.
+    sizes: HashMap<PathBuf, u64>,
 }
 
 impl<R: Read + Seek> ZipFS<R> {
     /// Mounts a ZIP file onto the local filesystem.
     pub fn new(zip_file: R) -> ZipResult<Self> {
-        let zip_file = ZipArchive::new(zip_file)?;
-
+        let mut zip_file = ZipArchive::new(zip_file)?;
         // collect folders
         let mut directories = HashSet::from_iter([Path::new("").to_owned()]);
         let mut normalized_lower_to_path = HashMap::new();
-        for file_name in zip_file.file_names() {
+        let mut sizes = HashMap::new();
+        for i in 0..zip_file.len() {
+            let entry = zip_file.by_index(i)?;
+            let file_name = entry.name().to_owned();
+            let size = entry.size();
+            drop(entry);
+
             for parent in parent_iter(Path::new(&file_name.to_lowercase())) {
                 directories.insert(parent.to_owned());
             }
 
-            let normalized = Self::normalize_path(file_name);
+            let normalized = Self::normalize_path(&file_name);
             let lower = PathBuf::from(
                 normalized
                     .to_str()
@@ -41,6 +47,7 @@ impl<R: Read + Seek> ZipFS<R> {
                     .to_lowercase(),
             );
 
+            sizes.insert(lower.clone(), size);
             normalized_lower_to_path.insert(lower, normalized);
         }
 
@@ -48,6 +55,7 @@ impl<R: Read + Seek> ZipFS<R> {
             zip_file: Mutex::new(zip_file),
             directories,
             normalized_lower_to_path,
+            sizes,
         })
     }
 
@@ -75,7 +83,7 @@ impl<R: Read + Seek> ZipFS<R> {
 
     fn normalize_path<P: AsRef<Path>>(path: P) -> PathBuf {
         // as far as I can tell, zip files are relative from the root
-        make_relative(util::normalize_path(path))
+        util::normalize_path(make_relative(path))
     }
 
     fn with_file<RV, F: FnOnce(ZipFile) -> RV>(
@@ -110,7 +118,7 @@ impl<R: Read + Seek> FileSystem for ZipFS<R> {
                 .ok_or_else(not_supported)?
                 .to_lowercase(),
         );
-        if self.directories.get(&lowercase_path).is_some() {
+        if self.directories.contains(&lowercase_path) {
             return Ok(Metadata {
                 file_type: FileType::Directory,
                 len: 0,
@@ -154,28 +162,23 @@ impl<R: Read + Seek> FileSystem for ZipFS<R> {
             return Err(not_found());
         }
 
-        let mut zip_file = self.zip_file.lock();
-        let mut files = HashMap::new();
-        for file in zip_file
-            .file_names()
-            .map(|file_name| file_name.to_owned())
-            .collect_vec()
-        {
-            let normalized_file = Self::normalize_path(&file);
-
-            let mut add_parent = |normalized_path: &Path, metadata| {
+        let mut files: HashMap<PathBuf, Metadata> = HashMap::new();
+        for (lower, normalized_file) in &self.normalized_lower_to_path {
+            let mut add_parent = |normalized_path: &Path, metadata: Metadata| {
                 if normalized_path.parent()? == directory {
-                    files.insert(PathBuf::from(normalized_path.file_name()?), metadata);
+                    let name = PathBuf::from(normalized_path.file_name()?);
+                    // directories take precedence over file entries (e.g. "folder/" zip entries)
+                    let entry = files.entry(name).or_insert(metadata.clone());
+                    if metadata.is_directory() {
+                        *entry = metadata;
+                    }
                 }
-
                 Some(())
             };
 
             // if the file's parent is the directory, it's in the directory
-            add_parent(
-                &normalized_file,
-                Metadata::file(zip_file.by_name(&file)?.size()),
-            );
+            let size = self.sizes.get(lower).copied().unwrap_or(0);
+            add_parent(normalized_file, Metadata::file(size));
 
             // if the file's parent directory is in the directory, add it
             if let Some(file_parent) = normalized_file.parent() {

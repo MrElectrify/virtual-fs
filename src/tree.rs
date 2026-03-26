@@ -1,4 +1,4 @@
-use crate::util::{component_iter, invalid_path, make_relative, normalize_path, not_found};
+use crate::util::{component_iter, make_relative, normalize_path, not_found};
 use parking_lot::Mutex;
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
@@ -83,24 +83,21 @@ impl<T> FilesystemTree<T> {
     ) -> crate::Result<R> {
         // normalize the path
         let normalized_path = normalize_and_relativize(path);
-        let mut normalized_path = normalized_path.as_path();
+        let components: Vec<&str> = component_iter(&normalized_path).collect();
 
         // iterate through each component until we hit a filesystem
         let mut entry = self.root.lock();
         let mut entry = &mut *entry;
-        for component in component_iter(normalized_path) {
+        for (i, component) in components.iter().enumerate() {
             match entry {
                 Entry::Directory(directory) => {
-                    normalized_path = normalized_path
-                        .strip_prefix(format!("{component}/"))
-                        .map_err(|_| invalid_path())?;
-
                     // traverse into the directory
-                    entry = directory.get_mut(component).ok_or_else(not_found)?;
+                    entry = directory.get_mut(*component).ok_or_else(not_found)?;
                 }
                 Entry::UserData(ud) => {
                     // there can't be a valid component after resolving a file
-                    return f(Err((ud, normalized_path)));
+                    let remaining: PathBuf = components[i..].iter().collect();
+                    return f(Err((ud, &remaining)));
                 }
             }
         }
@@ -108,7 +105,7 @@ impl<T> FilesystemTree<T> {
         // entry has to be a directory unless the root is a filesystem
         match entry {
             Entry::Directory(dir) => f(Ok(dir)),
-            Entry::UserData(ud) => f(Err((ud, normalized_path))),
+            Entry::UserData(ud) => f(Err((ud, Path::new("")))),
         }
     }
 }

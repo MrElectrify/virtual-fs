@@ -112,7 +112,8 @@ pub fn parent_iter(path: &Path) -> impl DoubleEndedIterator<Item = &Path> {
 /// Trims the `/` and `\\` roots off of the beginning path, making it relative.
 pub(crate) fn make_relative<P: AsRef<Path>>(path: P) -> PathBuf {
     let path = path.as_ref().to_str().unwrap_or("");
-    path.trim_start_matches('/').trim_start_matches('\\').into()
+    let path = path.replace('\\', "/");
+    path.trim_start_matches('/').into()
 }
 
 /// Returns an error indicating that the path already exists.

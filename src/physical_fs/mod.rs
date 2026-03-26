@@ -37,16 +37,16 @@ impl<R: PathResolver> PhysicalFSImpl<R> {
 
 impl<R: PathResolver> FileSystem for PhysicalFSImpl<R> {
     fn create_dir(&self, path: &str) -> crate::Result<()> {
-        fs::create_dir(R::resolve_path(&self.root, path)?)
+        fs::create_dir(R::resolve_path(&self.root, path)?.normalize())
     }
 
     fn metadata(&self, path: &str) -> crate::Result<Metadata> {
-        fs::metadata(R::resolve_path(&self.root, path)?).map(Metadata::from)
+        fs::metadata(R::resolve_path(&self.root, path)?.normalize()).map(Metadata::from)
     }
 
     fn open_file_options(&self, path: &str, options: &OpenOptions) -> crate::Result<Box<dyn File>> {
         fs::OpenOptions::from(options)
-            .open(R::resolve_path(&self.root, path)?)
+            .open(R::resolve_path(&self.root, path)?.normalize())
             .map::<Box<dyn File>, _>(|file| Box::new(file))
     }
 
@@ -54,9 +54,15 @@ impl<R: PathResolver> FileSystem for PhysicalFSImpl<R> {
         &self,
         path: &str,
     ) -> crate::Result<Box<dyn Iterator<Item = crate::Result<DirEntry>>>> {
+        let resolved = R::resolve_path(&self.root, path)?;
+        let abs_root = if resolved.is_absolute() {
+            resolved.clone()
+        } else {
+            std::env::current_dir()?.join(&resolved).normalize()
+        };
+        let abs_root = abs_root.normalize();
         Ok(Box::new(
-            fs::read_dir(R::resolve_path(&self.root, path)?)?.map({
-                let root = self.root.clone();
+            fs::read_dir(&abs_root)?.map({
                 move |entry| {
                     entry.and_then({
                         |entry| {
@@ -64,7 +70,7 @@ impl<R: PathResolver> FileSystem for PhysicalFSImpl<R> {
                                 // strip the root
                                 path: entry
                                     .path()
-                                    .strip_prefix(&root)
+                                    .strip_prefix(&abs_root)
                                     .map_err(|_| invalid_path())?
                                     .into(),
                                 metadata: entry.metadata()?.into(),
@@ -77,11 +83,11 @@ impl<R: PathResolver> FileSystem for PhysicalFSImpl<R> {
     }
 
     fn remove_dir(&self, path: &str) -> crate::Result<()> {
-        fs::remove_dir(R::resolve_path(&self.root, path)?)
+        fs::remove_dir(R::resolve_path(&self.root, path)?.normalize())
     }
 
     fn remove_file(&self, path: &str) -> crate::Result<()> {
-        fs::remove_file(R::resolve_path(&self.root, path)?)
+        fs::remove_file(R::resolve_path(&self.root, path)?.normalize())
     }
 }
 

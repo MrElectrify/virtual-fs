@@ -102,9 +102,7 @@ impl FileSystem for MountableFS {
             .with_entry(path, |maybe_entry| match maybe_entry {
                 Ok(dir) => {
                     // we should have a directory
-                    let entries = dir
-                        .iter()
-                        .map(|(path, _)| {
+                    let entries = dir.keys().map(|path| {
                             // filesystems and directories are both functionally directories
                             Ok(DirEntry {
                                 path: path.into(),

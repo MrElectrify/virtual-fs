@@ -97,9 +97,10 @@ impl Metadata {
 
 impl From<fs::Metadata> for Metadata {
     fn from(value: fs::Metadata) -> Self {
+        let file_type = value.file_type().into();
         Self {
-            file_type: value.file_type().into(),
-            len: value.len(),
+            len: if file_type == FileType::Directory { 0 } else { value.len() },
+            file_type,
         }
     }
 }
