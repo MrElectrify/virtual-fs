@@ -10,6 +10,7 @@
 //! - `RocFS`: A "read-only collection" filesystem. This filesystem is similar to `OverlayFS`, but is read-only. This
 //!   filesystem searches filesystems in mount-order for files, allowing multiple filesystems to be mounted at once.
 //! - `MountableFS`: A read-write filesystem that supports mounting other filesystems at given paths.
+//! - `ScopedFS`: A read-write filesystem that restricts access to a subdirectory of an inner filesystem.
 //! - `ZipFS`: A read-only filesystem that mounts a ZIP archive, backed by the `zip` crate.
 //! - `TarFS` A read-only filesystem that mounts a Tarball, backed by the `tar` crate.
 
@@ -57,6 +58,15 @@ pub trait FileSystem {
     fn open_file(&self, path: &str) -> Result<Box<dyn File>> {
         self.open_file_options(path, &OpenOptions::default())
     }
+}
+
+impl<FS: FileSystem + ?Sized> FileSystem for Box<FS> {
+    fn create_dir(&self, path: &str) -> Result<()> { (**self).create_dir(path) }
+    fn metadata(&self, path: &str) -> Result<Metadata> { (**self).metadata(path) }
+    fn open_file_options(&self, path: &str, options: &OpenOptions) -> Result<Box<dyn File>> { (**self).open_file_options(path, options) }
+    fn read_dir(&self, path: &str) -> Result<Box<dyn Iterator<Item = Result<DirEntry>>>> { (**self).read_dir(path) }
+    fn remove_dir(&self, path: &str) -> Result<()> { (**self).remove_dir(path) }
+    fn remove_file(&self, path: &str) -> Result<()> { (**self).remove_file(path) }
 }
 
 pub mod error;
