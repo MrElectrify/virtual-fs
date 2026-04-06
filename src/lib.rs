@@ -76,7 +76,11 @@ pub mod mountable_fs;
 pub mod physical_fs;
 pub mod roc_fs;
 pub mod scoped_fs;
-pub mod tar_fs;
 mod tree;
 pub mod util;
+
+#[cfg(feature = "tar")]
+pub mod tar_fs;
+
+#[cfg(feature = "zip")]
 pub mod zip_fs;
