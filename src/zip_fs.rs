@@ -10,6 +10,12 @@ use std::path::PathBuf;
 use zip::result::{ZipError, ZipResult};
 use zip::ZipArchive;
 
+/// The default maximum size of a single decompressed file, 256 MiB.
+pub const DEFAULT_MAX_FILE_SIZE: u64 = 256 * 1024 * 1024;
+
+/// The maximum number of bytes reserved up front based on the size declared by an entry.
+const MAX_PREALLOCATION: u64 = 16 * 1024 * 1024;
+
 /// A virtual FileSystem backed by a ZIP file. Only supports read operations for now.
 ///
 /// Entry names are normalized when the archive is mounted: both `/` and `\` are treated as
@@ -19,6 +25,7 @@ use zip::ZipArchive;
 pub struct ZipFS<R: Read + Seek> {
     zip_file: Mutex<ZipArchive<R>>,
     index: Index,
+    max_file_size: u64,
 }
 
 /// An indexed entry of the archive.
@@ -153,14 +160,25 @@ fn lookup_key(path: &str) -> String {
 }
 
 impl<R: Read + Seek> ZipFS<R> {
-    /// Mounts a ZIP file onto the local filesystem.
+    /// Mounts a ZIP file onto the local filesystem. Files larger than [`DEFAULT_MAX_FILE_SIZE`]
+    /// cannot be opened, see [`ZipFS::with_max_file_size`].
     pub fn new(zip_file: R) -> ZipResult<Self> {
+        Self::with_max_file_size(zip_file, DEFAULT_MAX_FILE_SIZE)
+    }
+
+    /// Mounts a ZIP file onto the local filesystem.
+    ///
+    /// Opening a file decompresses it into memory. To guard against decompression bombs, files
+    /// that declare or decompress to more than `max_file_size` bytes fail to open with
+    /// [`ErrorKind::InvalidData`].
+    pub fn with_max_file_size(zip_file: R, max_file_size: u64) -> ZipResult<Self> {
         let mut zip_file = ZipArchive::new(zip_file)?;
         let index = Index::build(&mut zip_file)?;
 
         Ok(Self {
             zip_file: Mutex::new(zip_file),
             index,
+            max_file_size,
         })
     }
 
@@ -200,11 +218,21 @@ impl<R: Read + Seek> FileSystem for ZipFS<R> {
             Node::Directory => return Err(invalid_input("Is a directory")),
         };
 
-        // open the file and read into a readable buffer
+        // open the file and read into a readable buffer, never trusting the declared size
+        let too_large = || io::Error::new(ErrorKind::InvalidData, "File exceeds the maximum size");
+        if size > self.max_file_size {
+            return Err(too_large());
+        }
+
         let mut zip_file = self.zip_file.lock();
-        let mut entry = Self::convert_error(zip_file.by_index(index))?;
-        let mut contents = Vec::with_capacity(size as usize);
-        entry.read_to_end(&mut contents)?;
+        let entry = Self::convert_error(zip_file.by_index(index))?;
+        let mut contents = Vec::with_capacity(size.min(MAX_PREALLOCATION) as usize);
+        entry
+            .take(self.max_file_size.saturating_add(1))
+            .read_to_end(&mut contents)?;
+        if contents.len() as u64 > self.max_file_size {
+            return Err(too_large());
+        }
 
         Ok(Box::new(ZipFileContents {
             inner: Cursor::new(contents),
@@ -442,6 +470,75 @@ mod test {
         // directories implied by several entries are fine
         let fs = memory_zip_fs(&["dir/", "DIR/"], &[("dir/a", "a"), ("Dir/b", "b")]);
         itertools::assert_equal(read_directory(&fs, "dir").unwrap().keys(), vec!["a", "b"]);
+    }
+
+    /// Returns the offset of the first central directory file header.
+    fn central_directory_header(zip: &[u8]) -> usize {
+        zip.windows(4)
+            .position(|window| window == [0x50, 0x4b, 0x01, 0x02])
+            .unwrap()
+    }
+
+    #[test]
+    fn file_size_limit() {
+        let zip = build_zip(&[], &[("small", "1234"), ("large", "12345")]);
+        let fs = ZipFS::with_max_file_size(Cursor::new(zip), 4).unwrap();
+
+        assert_eq!(read_string(&fs, "small").unwrap(), "1234");
+        assert_eq!(
+            fs.open_file("large").err().unwrap().kind(),
+            ErrorKind::InvalidData
+        );
+        // metadata is still available
+        assert_eq!(fs.metadata("large").unwrap().len(), 5);
+    }
+
+    #[test]
+    fn decompression_bomb_is_rejected() {
+        // 64 MiB of zeros compress to a few dozen KiB
+        let mut writer = ZipWriter::new(Cursor::new(Vec::new()));
+        writer.start_file("bomb", FileOptions::default()).unwrap();
+        let chunk = vec![0u8; 1024 * 1024];
+        for _ in 0..64 {
+            writer.write_all(&chunk).unwrap();
+        }
+        let zip = writer.finish().unwrap().into_inner();
+        assert!(zip.len() < 1024 * 1024);
+
+        let fs = ZipFS::with_max_file_size(Cursor::new(zip), 1024 * 1024).unwrap();
+        assert_eq!(
+            fs.open_file("bomb").err().unwrap().kind(),
+            ErrorKind::InvalidData
+        );
+    }
+
+    #[test]
+    fn declared_size_is_not_trusted() {
+        let stored = FileOptions::default().compression_method(zip::CompressionMethod::Stored);
+        let mut writer = ZipWriter::new(Cursor::new(Vec::new()));
+        writer.start_file("liar", stored).unwrap();
+        writer.write_all(b"hello world").unwrap();
+        let zip = writer.finish().unwrap().into_inner();
+
+        // an absurdly large declared size fails without allocating it
+        let mut huge = zip.clone();
+        let header = central_directory_header(&huge);
+        huge[header + 24..header + 28].copy_from_slice(&u32::MAX.to_le_bytes());
+        let fs = ZipFS::new(Cursor::new(huge)).unwrap();
+        assert_eq!(
+            fs.open_file("liar").err().unwrap().kind(),
+            ErrorKind::InvalidData
+        );
+
+        // a declared size below the limit does not allow reading past the limit
+        let mut tiny = zip;
+        let header = central_directory_header(&tiny);
+        tiny[header + 24..header + 28].copy_from_slice(&1u32.to_le_bytes());
+        let fs = ZipFS::with_max_file_size(Cursor::new(tiny), 4).unwrap();
+        assert_eq!(
+            fs.open_file("liar").err().unwrap().kind(),
+            ErrorKind::InvalidData
+        );
     }
 
     #[test]
