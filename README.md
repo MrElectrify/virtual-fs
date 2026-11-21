@@ -12,5 +12,7 @@ a focus on conformity with `std`.
 - `MountableFS`: A read-write filesystem that supports mounting other filesystems at given paths.
 - `ScopedFS`: A read-write filesystem that restricts access to a subdirectory of an inner filesystem, rejecting any
   path traversal that would escape the scope.
-- `ZipFS`: A read-only filesystem that mounts a ZIP archive, backed by the `zip` crate.
+- `ZipFS`: A read-only filesystem that mounts a ZIP archive, backed by the `zip` crate. Files are decompressed into
+  memory when opened; files larger than 256 MiB are rejected to guard against decompression bombs. Use
+  `ZipFS::with_max_file_size` to choose a different limit.
 - `TarFS`: A read-only filesystem that mounts a Tarball, backed by the `tar` crate.
