@@ -297,7 +297,8 @@ impl Write for ZipFileContents {
     }
 
     fn flush(&mut self) -> io::Result<()> {
-        Err(not_supported())
+        // there is never anything to flush
+        Ok(())
     }
 }
 
@@ -539,6 +540,15 @@ mod test {
             fs.open_file("liar").err().unwrap().kind(),
             ErrorKind::InvalidData
         );
+    }
+
+    #[test]
+    fn files_are_read_only() {
+        let fs = zip_fs();
+        let mut file = fs.open_file("file").unwrap();
+
+        assert_eq!(file.write(b"x").unwrap_err().kind(), ErrorKind::Unsupported);
+        assert!(file.flush().is_ok());
     }
 
     #[test]
