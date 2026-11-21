@@ -91,16 +91,24 @@ impl Index {
                 } else {
                     Node::Directory
                 };
-                index.insert(parent, path.clone(), component, node);
+                index.insert(parent, path.clone(), component, node)?;
             }
         }
 
         Ok(index)
     }
 
-    fn insert(&mut self, parent: String, path: String, name: &str, node: Node) {
-        if self.entries.contains_key(&path) {
-            return;
+    fn insert(&mut self, parent: String, path: String, name: &str, node: Node) -> ZipResult<()> {
+        if let Some(existing) = self.entries.get(&path) {
+            // directories may be implied by multiple entries, but anything else would make one
+            // entry shadow another
+            return if existing.node == Node::Directory && node == Node::Directory {
+                Ok(())
+            } else {
+                Err(ZipError::InvalidArchive(
+                    "Conflicting entries in zip archive",
+                ))
+            };
         }
 
         self.children.entry(parent).or_default().push(path.clone());
@@ -114,6 +122,7 @@ impl Index {
                 node,
             },
         );
+        Ok(())
     }
 
     fn get(&self, path: &str) -> crate::Result<&Entry> {
@@ -278,6 +287,7 @@ mod test {
     use std::collections::BTreeMap;
     use std::fs::File;
     use std::io::{Cursor, ErrorKind, Read, Seek, Write};
+    use zip::result::ZipError;
     use zip::write::{FileOptions, ZipWriter};
 
     fn read_directory<R: Read + Seek>(
@@ -409,6 +419,29 @@ mod test {
         assert!(fs.metadata("nested/empty").unwrap().is_directory());
         assert!(read_directory(&fs, "empty").unwrap().is_empty());
         assert!(read_directory(&fs, "nested/empty").unwrap().is_empty());
+    }
+
+    #[test]
+    fn conflicting_entries_are_rejected() {
+        for files in [
+            &[("a.txt", "first"), ("A.TXT", "second")][..],
+            &[("a.txt", "first"), ("./a.txt", "second")][..],
+            &[("dir/a.txt", "first"), ("../dir/a.txt", "second")][..],
+            &[("a", "file"), ("a/b", "file below a file")][..],
+        ] {
+            let err = ZipFS::new(Cursor::new(build_zip(&[], files))).unwrap_err();
+            assert!(
+                matches!(err, ZipError::InvalidArchive(_)),
+                "{files:?}: {err:?}"
+            );
+        }
+
+        let err = ZipFS::new(Cursor::new(build_zip(&["a/"], &[("A", "file")]))).unwrap_err();
+        assert!(matches!(err, ZipError::InvalidArchive(_)), "{err:?}");
+
+        // directories implied by several entries are fine
+        let fs = memory_zip_fs(&["dir/", "DIR/"], &[("dir/a", "a"), ("Dir/b", "b")]);
+        itertools::assert_equal(read_directory(&fs, "dir").unwrap().keys(), vec!["a", "b"]);
     }
 
     #[test]
